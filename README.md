@@ -35,10 +35,11 @@ Or build locally:
 docker build -t opencode-warp-proxy:local .
 docker run -d --name opencode-warp-proxy --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
+  -e SESSION_ID=your-stable-id \
   opencode-warp-proxy:local
 ```
 
-The container listens on `0.0.0.0` and respects `$PORT`, so hosting platforms can inject their own port. Locally, `-p 127.0.0.1:8080:8080` keeps it on loopback.
+The container listens on `0.0.0.0` and respects `$PORT`, so hosting platforms can inject their own port. Locally, `-p 127.0.0.1:8080:8080` keeps it on loopback. If you omit `-e SESSION_ID`, the proxy generates a random UUID at each startup (logged as `[boot] session:`) and upstream prompt caching resets on restart.
 
 Verify it works:
 
@@ -173,6 +174,7 @@ The image is published as [`overlag/opencode-warp-proxy`](https://hub.docker.com
 ```bash
 docker run -d --name opencode-warp-proxy --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
+  -e SESSION_ID=your-stable-id \
   overlag/opencode-warp-proxy:latest
 ```
 
