@@ -194,7 +194,7 @@ test('health with query string stays local (Hono path match)', async () => {
   assert.equal(seen.length, 0);
 });
 
-test('health is GET-only: POST and trailing slash are proxied', async () => {
+test('health answers any method; trailing slash still proxied', async () => {
   seen.length = 0;
   const postRes = await new Promise((resolve, reject) => {
     const req = http.request(
@@ -209,8 +209,8 @@ test('health is GET-only: POST and trailing slash are proxied', async () => {
     req.end();
   });
   assert.equal(postRes.status, 200);
-  assert.deepEqual(JSON.parse(postRes.body), { ok: true });
-  assert.equal(seen[0].url, '/zen/go/health');
+  assert.deepEqual(JSON.parse(postRes.body), { status: 'ok' });
+  assert.equal(seen.length, 0);
 
   seen.length = 0;
   const slashRes = await clientGet(proxy.port, '/health/');

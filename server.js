@@ -162,8 +162,8 @@ function handleProxy(req, res) {
 const app = new Hono();
 
 // Local health endpoints - never proxied, never touch upstream.
-app.get('/health', (c) => c.json({ status: 'ok' }));
-app.get('/healthz', (c) => c.json({ status: 'ok' }));
+app.all('/health', (c) => c.json({ status: 'ok' }));
+app.all('/healthz', (c) => c.json({ status: 'ok' }));
 
 // Everything else goes through the raw byte-for-byte proxy. The proxy writes
 // directly to the Node ServerResponse, so return the adapter's already-sent
