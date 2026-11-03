@@ -42,7 +42,7 @@ function startProxy(extraEnv = {}) {
   return freePort().then(
     (port) =>
       new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [fileURLToPath(new URL('./server.js', import.meta.url))], {
+        const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url))], {
           env: {
             ...process.env,
             PORT: String(port),
