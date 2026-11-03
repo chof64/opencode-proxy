@@ -10,27 +10,6 @@ OpenCode Go rejects requests without that header:
 
 This proxy listens on `127.0.0.1:8080`, receives Warp's requests, and forwards them to `https://opencode.ai/zen/go/v1/...` with the required headers injected.
 
-## ⚠️ IMPORTANT — read this first
-
-This proxy **cannot be used directly**. It speaks plain HTTP only, on `127.0.0.1:8080` by default. Clients like Warp (and most modern AI clients) refuse to connect to local IPs and require HTTPS with a valid certificate served from a public domain.
-
-You **must expose the proxy behind a TLS-terminating reverse proxy** with a real, public, HTTPS-served domain. The Warp Base URL must look like `https://<your-domain>/v1`.
-
-Options (pick one):
-
-- **Cloudflare Tunnel** — no port forwarding needed, free, includes HTTPS. ([docs](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/))
-- **Nginx Proxy Manager / Caddy / Traefik** on a host with a public IP and ports 80/443 open.
-- **Any reverse proxy** that terminates TLS for your domain.
-
-What does NOT work:
-
-- ❌ `http://localhost:8080` from Warp — Warp rejects local IPs
-- ❌ `http://<public-ip>:8080` — no HTTPS, no valid certificate
-- ❌ `https://localhost` or `https://127.0.0.1` — same rejection + cert validation fails
-- ❌ Using the proxy directly from a browser/curl without going through a reverse proxy that adds HTTPS
-
-The proxy itself does **not** terminate TLS. It is designed to sit behind something that does.
-
 ## Requirements
 
 - Docker + Docker Compose
@@ -94,8 +73,9 @@ cp .env.example .env
 | `PORT` | `8080` | Listen port (change both this and the host mapping in `docker-compose.yml`). |
 | `SESSION_ID` | random UUID | Pin a stable id to keep prompt caching across proxy restarts. |
 | `USER_AGENT` | `opencode-warp-proxy/1.0` | Must identify as a coding agent. Generic SDK UAs are blocked. |
-| `MAX_BODY_BYTES` | `1048576` | Max request body size. Larger payloads get 413. |
+| `MAX_BODY_BYTES` | `10485760` | Max request body size. Larger payloads get 413. |
 | `REQUEST_TIMEOUT_MS` | `60000` | Per-request timeout for both client and upstream. |
+| `UPSTREAM_BASE` | `https://opencode.ai/zen/go` | Upstream base URL. Only needed for tests. |
 
 ## How it works
 
@@ -161,6 +141,12 @@ Run without Docker:
 ```bash
 npm install   # no dependencies, but creates node_modules/.bin
 npm start
+```
+
+Run the tests (spawns the proxy against a local stub, no network needed):
+
+```bash
+npm test
 ```
 
 Or with watch mode:
