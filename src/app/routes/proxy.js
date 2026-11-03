@@ -15,6 +15,11 @@ const HOP_BY_HOP = new Set([
   'host',
 ]);
 
+// Temp discovery log: values the client actually sent. Never add session-like
+// names here or the mapping exercise defeats itself.
+// shortcut: narrow redaction set, remove LOG_HEADERS once the client session header is mapped.
+const REDACTED_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie']);
+
 export function handleProxy(req, res, config) {
   const {
     TARGET_HOST,
@@ -25,6 +30,7 @@ export function handleProxy(req, res, config) {
     OVERRIDE_KEY,
     SESSION_ID,
     USER_AGENT,
+    LOG_HEADERS,
   } = config;
 
   // Pre-check declared Content-Length: reject oversized bodies BEFORE Node sends
@@ -80,6 +86,15 @@ export function handleProxy(req, res, config) {
 
   const started = Date.now();
   console.log(`[req] ${req.method} ${incomingPath} -> https://${TARGET_HOST}${targetPath}`);
+  if (LOG_HEADERS) {
+    const safe = {};
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (REDACTED_HEADERS.has(key.toLowerCase())) safe[key] = '[redacted]';
+      else if (Array.isArray(value)) safe[key] = value.map((v) => String(v).replace(/[\r\n\t]/g, ''));
+      else if (value !== undefined) safe[key] = String(value).replace(/[\r\n\t]/g, '');
+    }
+    console.log(`[headers] ${JSON.stringify(safe)}`);
+  }
 
   // Timeouts (client side)
   req.setTimeout(REQUEST_TIMEOUT_MS);
