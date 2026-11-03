@@ -2,6 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import zlib from 'node:zlib';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -161,5 +162,66 @@ test('health never touches upstream', async () => {
   const res = await clientGet(proxy.port, '/health');
   assert.equal(res.status, 200);
   assert.deepEqual(JSON.parse(res.body.toString()), { status: 'ok' });
+  assert.equal(seen.length, 0);
+});
+
+test('healthz mirrors health, never touches upstream', async () => {
+  seen.length = 0;
+  const res = await clientGet(proxy.port, '/healthz');
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-type'], /application\/json/);
+  assert.deepEqual(JSON.parse(res.body.toString()), { status: 'ok' });
+  assert.equal(seen.length, 0);
+});
+
+test('health with query string stays local (Hono path match)', async () => {
+  seen.length = 0;
+  for (const path of ['/health?x=1', '/healthz?x=1']) {
+    const res = await clientGet(proxy.port, path);
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.body.toString()), { status: 'ok' });
+  }
+  assert.equal(seen.length, 0);
+});
+
+test('health is GET-only: POST and trailing slash are proxied', async () => {
+  seen.length = 0;
+  const postRes = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: proxy.port, path: '/health', method: 'POST', agent: noKeepAlive },
+      (r) => {
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => resolve({ status: r.statusCode, body: Buffer.concat(chunks).toString() }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+  assert.equal(postRes.status, 200);
+  assert.deepEqual(JSON.parse(postRes.body), { ok: true });
+  assert.equal(seen[0].url, '/zen/go/health');
+
+  seen.length = 0;
+  const slashRes = await clientGet(proxy.port, '/health/');
+  assert.equal(slashRes.status, 200);
+  assert.deepEqual(JSON.parse(slashRes.body.toString()), { ok: true });
+  assert.equal(seen[0].url, '/zen/go/health/');
+});
+
+test('malformed target gets single 4xx without touching upstream', async () => {
+  seen.length = 0;
+  const raw = await new Promise((resolve, reject) => {
+    let data = '';
+    const sock = net.connect(proxy.port, '127.0.0.1', () => {
+      sock.write('GET /v1/mo dels HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+    });
+    sock.on('data', (c) => {
+      data += c.toString();
+    });
+    sock.on('end', () => resolve(data));
+    sock.on('error', reject);
+  });
+  assert.match(raw, /^HTTP\/1\.1 4\d\d/);
   assert.equal(seen.length, 0);
 });
