@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 
+// Framing headers Node re-derives for the upstream socket. Everything else
+// (content-length, accept-encoding, custom headers, ...) passes through verbatim.
 const HOP_BY_HOP = new Set([
   'connection',
   'keep-alive',
@@ -11,14 +13,12 @@ const HOP_BY_HOP = new Set([
   'transfer-encoding',
   'upgrade',
   'host',
-  'content-length',
 ]);
 
 export function handleProxy(req, res, config) {
   const {
     TARGET_HOST,
     TARGET_PORT,
-    TARGET_PREFIX,
     upstreamRequest,
     MAX_BODY_BYTES,
     REQUEST_TIMEOUT_MS,
@@ -50,7 +50,9 @@ export function handleProxy(req, res, config) {
   };
 
   const incomingPath = (req.url || '/').replace(/[\x00-\x1f]/g, '');
-  const targetPath = `${TARGET_PREFIX}${incomingPath.startsWith('/') ? incomingPath : '/' + incomingPath}`;
+  // Scoping is done by the router (mounted at /zen/go and /inference/go):
+  // anything reaching here is forwarded unchanged, query included.
+  const targetPath = incomingPath;
 
   const headers = {};
   for (const [key, value] of Object.entries(req.headers)) {
@@ -59,13 +61,10 @@ export function handleProxy(req, res, config) {
     }
   }
 
-  // Never ask upstream for compression: bodies are piped through byte-for-byte,
-  // so a gzipped reply would reach the client flagged as plain JSON. Force identity.
-  delete headers['accept-encoding'];
-
   headers.host = TARGET_HOST;
-  headers['user-agent'] = USER_AGENT;
-  headers['x-opencode-session'] = SESSION_ID;
+  // Fallbacks only: forward the client's values untouched when present.
+  if (!headers['user-agent']) headers['user-agent'] = USER_AGENT;
+  if (!headers['x-opencode-session']) headers['x-opencode-session'] = SESSION_ID;
 
   if (OVERRIDE_KEY) {
     headers.authorization = `Bearer ${OVERRIDE_KEY}`;
@@ -93,8 +92,10 @@ export function handleProxy(req, res, config) {
   const proxyReq = upstreamRequest(options, (proxyRes) => {
     if (responded || res.writableEnded) return; // we already sent 413 / 502
     responded = true;
-    const outHeaders = { ...proxyRes.headers };
-    delete outHeaders['transfer-encoding'];
+    const outHeaders = {};
+    for (const [key, value] of Object.entries(proxyRes.headers)) {
+      if (!HOP_BY_HOP.has(key.toLowerCase())) outHeaders[key] = value;
+    }
     res.writeHead(proxyRes.statusCode || 502, outHeaders);
     // Upstream dying mid-stream must end the client response, not hang it.
     proxyRes.on('error', (err) => {
@@ -141,8 +142,8 @@ export function handleProxy(req, res, config) {
     }
   });
 
-  // Client hung up (e.g. Warp "stop" pressed): kill the upstream request so it
-  // stops burning quota generating output nobody will read.
+  // Client hung up (e.g. harness cancelled the request): kill the upstream
+  // request so it stops burning quota generating output nobody will read.
   res.on('close', () => {
     if (!res.writableEnded) proxyReq.destroy();
   });

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import net from 'node:net';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { serve } from '@hono/node-server';
+import { loadConfig, createApp } from '../src/app/index.js';
 
 // Local stub standing in for opencode.ai. Records what the proxy forwards.
 const seen = [];
@@ -38,47 +38,57 @@ function clientGet(port, path, headers = {}) {
   });
 }
 
+function clientPost(port, path, json, headers = {}) {
+  const body = typeof json === 'string' ? json : JSON.stringify(json);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), ...headers },
+        agent: noKeepAlive,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+// In-process proxy: config is built with loadConfig (stub origin injected via
+// opts, no env knob) and served directly. No subprocess, no network needed.
 function startProxy(extraEnv = {}) {
   return freePort().then(
     (port) =>
       new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url))], {
-          env: {
-            ...process.env,
-            PORT: String(port),
-            HOST: '127.0.0.1',
-            SESSION_ID: 'test-session-id',
-            UPSTREAM_BASE: `http://127.0.0.1:${stubPort}/zen/go`,
-            OPENCODE_API_KEY: '',
-            ...extraEnv,
-          },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        const kill = () => child.kill();
-        let stderr = '';
-        const timer = setTimeout(() => {
-          kill();
-          reject(new Error(`proxy did not boot in time${stderr ? `: ${stderr.slice(-500)}` : ''}`));
-        }, 8000);
-        child.stdout.on('data', (d) => {
-          if (d.toString().includes('[boot] listening')) {
-            clearTimeout(timer);
-            resolve({ child, port, kill });
-          }
-        });
-        child.stderr.on('data', (d) => {
-          stderr += d.toString();
-        });
-        child.on('error', (err) => {
-          clearTimeout(timer);
+        let config;
+        try {
+          config = loadConfig(
+            {
+              ...process.env,
+              PORT: String(port),
+              HOST: '127.0.0.1',
+              SESSION_ID: 'test-session-id',
+              OPENCODE_API_KEY: '',
+              ...extraEnv,
+            },
+            { upstreamOrigin: `http://127.0.0.1:${stubPort}` },
+          );
+        } catch (err) {
           reject(err);
+          return;
+        }
+        const app = createApp(config);
+        const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => {
+          resolve({ server, port, kill: () => server.close() });
         });
-        // Fail fast when the child crashes on boot (e.g. missing deps):
-        // without this the 8s timer burns on every boot failure.
-        child.on('exit', (code) => {
-          clearTimeout(timer);
-          reject(new Error(`proxy exited before boot (code ${code})${stderr ? `: ${stderr.slice(-500)}` : ''}`));
-        });
+        server.on('error', reject);
       }),
   );
 }
@@ -115,9 +125,9 @@ after(() => {
   return new Promise((r) => stub.close(r));
 });
 
-test('rewrites path, injects session id, passes auth through', async () => {
+test('mirrors zen path, injects session id, passes auth through', async () => {
   seen.length = 0;
-  const res = await clientGet(proxy.port, '/v1/models', {
+  const res = await clientGet(proxy.port, '/zen/go/v1/models', {
     'accept-encoding': 'gzip, br', // every real client sends this
     authorization: 'Bearer client-key',
   });
@@ -127,19 +137,65 @@ test('rewrites path, injects session id, passes auth through', async () => {
   assert.equal(seen[0].url, '/zen/go/v1/models');
   assert.equal(seen[0].headers['x-opencode-session'], 'test-session-id');
   assert.equal(seen[0].headers.authorization, 'Bearer client-key');
-  assert.ok(!('accept-encoding' in seen[0].headers), 'proxy must not negotiate compression upstream');
+  assert.equal(seen[0].headers['accept-encoding'], 'gzip, br');
+});
+
+test('mirrors inference paths unchanged, query included', async () => {
+  seen.length = 0;
+  const payload = { model: 'glm-5.3-flash', messages: [{ role: 'user', content: 'hi' }] };
+  const res = await clientPost(proxy.port, '/inference/go/openai/v1/chat/completions', payload, {
+    authorization: 'Bearer client-key',
+  });
+  assert.equal(res.status, 200);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, '/inference/go/openai/v1/chat/completions');
+  assert.deepEqual(JSON.parse(seen[0].body), payload);
+
+  seen.length = 0;
+  const models = await clientGet(proxy.port, '/inference/go/v1/models?foo=bar');
+  assert.equal(models.status, 200);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, '/inference/go/v1/models?foo=bar');
+});
+
+test("client session id wins when present, proxy injects fallback when absent", async () => {
+  seen.length = 0;
+  await clientGet(proxy.port, '/zen/go/v1/models', { 'x-opencode-session': 'client-session' });
+  assert.equal(seen[0].headers['x-opencode-session'], 'client-session');
+  seen.length = 0;
+  await clientGet(proxy.port, '/zen/go/v1/models');
+  assert.equal(seen[0].headers['x-opencode-session'], 'test-session-id');
+});
+
+test('client user-agent wins when present, proxy injects fallback when absent', async () => {
+  seen.length = 0;
+  await clientGet(proxy.port, '/zen/go/v1/models', { 'user-agent': 'my-harness/2.0' });
+  assert.equal(seen[0].headers['user-agent'], 'my-harness/2.0');
+  seen.length = 0;
+  await clientGet(proxy.port, '/zen/go/v1/models');
+  assert.ok(seen[0].headers['user-agent']);
+});
+
+test('client content-length and custom headers pass through verbatim', async () => {
+  seen.length = 0;
+  const payload = { model: 'm', messages: [] };
+  const body = JSON.stringify(payload);
+  const res = await clientPost(proxy.port, '/zen/go/v1/chat', payload, { 'x-custom': 'yes' });
+  assert.equal(res.status, 200);
+  assert.equal(seen[0].headers['content-length'], String(Buffer.byteLength(body)));
+  assert.equal(seen[0].headers['x-custom'], 'yes');
 });
 
 test('override key replaces client auth', async () => {
   seen.length = 0;
-  await clientGet(overrideProxy.port, '/v1/models', { authorization: 'Bearer client-key' });
+  await clientGet(overrideProxy.port, '/zen/go/v1/models', { authorization: 'Bearer client-key' });
   assert.equal(seen[0].headers.authorization, 'Bearer override-key');
 });
 
 test('upstream reply arrives intact, compressed or not', async () => {
   stubMode = 'gzip';
   try {
-    const res = await clientGet(proxy.port, '/v1/models', { 'accept-encoding': 'gzip, br' });
+    const res = await clientGet(proxy.port, '/zen/go/v1/models', { 'accept-encoding': 'gzip, br' });
     assert.equal(res.status, 200);
     assert.equal(res.headers['content-encoding'], 'gzip');
     assert.deepEqual(JSON.parse(zlib.gunzipSync(res.body).toString()), { ok: true, mode: 'gzip' });
@@ -152,7 +208,7 @@ test('oversized declared body gets 413 without touching upstream', async () => {
   seen.length = 0;
   const res = await new Promise((resolve, reject) => {
     const req = http.request(
-      { host: '127.0.0.1', port: proxy.port, path: '/v1/chat/completions', method: 'POST', headers: { 'content-length': String(11 * 1024 * 1024) } },
+      { host: '127.0.0.1', port: proxy.port, path: '/zen/go/v1/chat/completions', method: 'POST', headers: { 'content-length': String(11 * 1024 * 1024) } },
       (r) => {
         const chunks = [];
         r.on('data', (c) => chunks.push(c));
@@ -165,6 +221,16 @@ test('oversized declared body gets 413 without touching upstream', async () => {
   assert.equal(res.status, 413);
   assert.equal(JSON.parse(res.body).error, 'payload_too_large');
   assert.equal(seen.length, 0);
+});
+
+test('non-Go paths 404 without touching upstream', async () => {
+  for (const path of ['/v1/models', '/v1/chat/completions', '/', '/oops']) {
+    seen.length = 0;
+    const res = await clientGet(proxy.port, path);
+    assert.equal(res.status, 404);
+    assert.equal(JSON.parse(res.body.toString()).error, 'not_found');
+    assert.equal(seen.length, 0);
+  }
 });
 
 test('health never touches upstream', async () => {
@@ -194,7 +260,7 @@ test('health with query string stays local (Hono path match)', async () => {
   assert.equal(seen.length, 0);
 });
 
-test('health answers any method; trailing slash still proxied', async () => {
+test('health answers any method; trailing slash is not health', async () => {
   seen.length = 0;
   const postRes = await new Promise((resolve, reject) => {
     const req = http.request(
@@ -214,9 +280,8 @@ test('health answers any method; trailing slash still proxied', async () => {
 
   seen.length = 0;
   const slashRes = await clientGet(proxy.port, '/health/');
-  assert.equal(slashRes.status, 200);
-  assert.deepEqual(JSON.parse(slashRes.body.toString()), { ok: true });
-  assert.equal(seen[0].url, '/zen/go/health/');
+  assert.equal(slashRes.status, 404);
+  assert.equal(seen.length, 0);
 });
 
 test('malformed target gets single 4xx without touching upstream', async () => {
@@ -224,7 +289,7 @@ test('malformed target gets single 4xx without touching upstream', async () => {
   const raw = await new Promise((resolve, reject) => {
     let data = '';
     const sock = net.connect(proxy.port, '127.0.0.1', () => {
-      sock.write('GET /v1/mo dels HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+      sock.write('GET /zen/go/v1/mo dels HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
     });
     sock.on('data', (c) => {
       data += c.toString();

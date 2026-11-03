@@ -3,12 +3,12 @@ import { loadConfig, createApp } from './app/index.js';
 
 const config = loadConfig();
 const app = createApp(config);
-const { PORT, HOST, UPSTREAM, TARGET_PREFIX, OVERRIDE_KEY, SESSION_ID, USER_AGENT, MAX_BODY_BYTES, REQUEST_TIMEOUT_MS } = config;
+const { PORT, HOST, UPSTREAM, OVERRIDE_KEY, SESSION_ID, USER_AGENT, MAX_BODY_BYTES, REQUEST_TIMEOUT_MS } = config;
 
 const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }, () => {
   const mode = OVERRIDE_KEY ? 'override (env OPENCODE_API_KEY)' : 'pass-through (from client)';
   console.log(`[boot] listening on http://${HOST}:${PORT}`);
-  console.log(`[boot] target: ${UPSTREAM.origin}${TARGET_PREFIX}/v1`);
+  console.log(`[boot] upstream: ${UPSTREAM.origin} (mirrors /zen/go/*, /inference/go/*)`);
   console.log(`[boot] session: ${SESSION_ID}`);
   console.log(`[boot] user-agent: ${USER_AGENT}`);
   console.log(`[boot] auth: ${mode}`);
