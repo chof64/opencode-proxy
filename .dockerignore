@@ -21,6 +21,3 @@ build/
 coverage/
 *.md
 LICENSE
-docker-compose.yml
-docker-compose.override.yml
-Makefile
