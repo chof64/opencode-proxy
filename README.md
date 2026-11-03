@@ -182,22 +182,22 @@ docker run -d --name opencode-proxy --restart unless-stopped \
 
 ### Automated (preferred)
 
-Push a version tag and GitHub Actions tests, then builds and pushes `linux/amd64` + `linux/arm64` to GHCR:
+Merge a conventional commit to `main` and one release run versions, tags (`v*`), creates the GitHub Release, and publishes the GHCR image — never tag or push manually:
+
+| Commit | Release |
+|--------|---------|
+| `fix:` | patch |
+| `feat:` | minor |
+| `BREAKING CHANGE:` footer | major |
+
+Non-releasing pushes skip the publish steps. [`.github/workflows/docker.yml`](.github/workflows/docker.yml) is verification-only (PR builds, never pushes); all `main`-push testing and all publishes happen in [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+### Local build (no push)
+
+All publishes go through GitHub Actions — never push images manually, so every tag is built identically from a `v*` tag. For local verification only:
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
-```
-
-PRs and `main` pushes build both arches without pushing. See [`.github/workflows/docker.yml`](.github/workflows/docker.yml).
-
-### Manual build, tag and push
-
-```bash
-echo "$CR_PAT" | docker login ghcr.io -u chof64 --password-stdin
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/chof64/opencode-proxy:1.0.0 \
-  -t ghcr.io/chof64/opencode-proxy:latest \
-  --push .
+docker build -t opencode-proxy:local .
 ```
 
 Tags: `:latest` for everyday use, `:1.0.0` (or next semver) for reproducibility.
@@ -218,8 +218,9 @@ docker pull --platform linux/arm64 ghcr.io/chof64/opencode-proxy:1.0.0
 
 ### Releasing a new version
 
+Just merge to `main` using conventional commits (`fix:`, `feat:`, or a `BREAKING CHANGE:` footer). Verify after merge:
+
 ```bash
-git tag v1.1.0 && git push origin v1.1.0
 docker buildx imagetools inspect ghcr.io/chof64/opencode-proxy:1.1.0
 ```
 
