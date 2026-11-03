@@ -2,6 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import zlib from 'node:zlib';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -54,9 +55,10 @@ function startProxy(extraEnv = {}) {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         const kill = () => child.kill();
+        let stderr = '';
         const timer = setTimeout(() => {
           kill();
-          reject(new Error('proxy did not boot in time'));
+          reject(new Error(`proxy did not boot in time${stderr ? `: ${stderr.slice(-500)}` : ''}`));
         }, 8000);
         child.stdout.on('data', (d) => {
           if (d.toString().includes('[boot] listening')) {
@@ -64,9 +66,18 @@ function startProxy(extraEnv = {}) {
             resolve({ child, port, kill });
           }
         });
+        child.stderr.on('data', (d) => {
+          stderr += d.toString();
+        });
         child.on('error', (err) => {
           clearTimeout(timer);
           reject(err);
+        });
+        // Fail fast when the child crashes on boot (e.g. missing deps):
+        // without this the 8s timer burns on every boot failure.
+        child.on('exit', (code) => {
+          clearTimeout(timer);
+          reject(new Error(`proxy exited before boot (code ${code})${stderr ? `: ${stderr.slice(-500)}` : ''}`));
         });
       }),
   );
@@ -99,8 +110,8 @@ before(async () => {
 });
 
 after(() => {
-  proxy.kill();
-  overrideProxy.kill();
+  proxy?.kill();
+  overrideProxy?.kill();
   return new Promise((r) => stub.close(r));
 });
 
@@ -161,5 +172,66 @@ test('health never touches upstream', async () => {
   const res = await clientGet(proxy.port, '/health');
   assert.equal(res.status, 200);
   assert.deepEqual(JSON.parse(res.body.toString()), { status: 'ok' });
+  assert.equal(seen.length, 0);
+});
+
+test('healthz mirrors health, never touches upstream', async () => {
+  seen.length = 0;
+  const res = await clientGet(proxy.port, '/healthz');
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-type'], /application\/json/);
+  assert.deepEqual(JSON.parse(res.body.toString()), { status: 'ok' });
+  assert.equal(seen.length, 0);
+});
+
+test('health with query string stays local (Hono path match)', async () => {
+  seen.length = 0;
+  for (const path of ['/health?x=1', '/healthz?x=1']) {
+    const res = await clientGet(proxy.port, path);
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.body.toString()), { status: 'ok' });
+  }
+  assert.equal(seen.length, 0);
+});
+
+test('health answers any method; trailing slash still proxied', async () => {
+  seen.length = 0;
+  const postRes = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: proxy.port, path: '/health', method: 'POST', agent: noKeepAlive },
+      (r) => {
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => resolve({ status: r.statusCode, body: Buffer.concat(chunks).toString() }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+  assert.equal(postRes.status, 200);
+  assert.deepEqual(JSON.parse(postRes.body), { status: 'ok' });
+  assert.equal(seen.length, 0);
+
+  seen.length = 0;
+  const slashRes = await clientGet(proxy.port, '/health/');
+  assert.equal(slashRes.status, 200);
+  assert.deepEqual(JSON.parse(slashRes.body.toString()), { ok: true });
+  assert.equal(seen[0].url, '/zen/go/health/');
+});
+
+test('malformed target gets single 4xx without touching upstream', async () => {
+  seen.length = 0;
+  const raw = await new Promise((resolve, reject) => {
+    let data = '';
+    const sock = net.connect(proxy.port, '127.0.0.1', () => {
+      sock.write('GET /v1/mo dels HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+    });
+    sock.on('data', (c) => {
+      data += c.toString();
+    });
+    sock.on('end', () => resolve(data));
+    sock.on('error', reject);
+  });
+  assert.match(raw, /^HTTP\/1\.1 4\d\d/);
   assert.equal(seen.length, 0);
 });
