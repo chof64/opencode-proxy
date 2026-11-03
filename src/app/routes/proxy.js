@@ -20,6 +20,15 @@ const HOP_BY_HOP = new Set([
 // shortcut: narrow redaction set, remove LOG_HEADERS once the client session header is mapped.
 const REDACTED_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie']);
 
+function isToolsAutoCandidate(req, incomingPath, config) {
+  if (!config.COPILOT_COMPACTION_TOOLS_AUTO) return false;
+  if (req.method !== 'POST') return false;
+  const ct = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (ct !== 'application/json' && !ct.endsWith('+json')) return false;
+  const pathOnly = incomingPath.split('?')[0].toLowerCase();
+  return pathOnly.endsWith('/chat/completions') || pathOnly.endsWith('/responses');
+}
+
 export function handleProxy(req, res, config) {
   const {
     TARGET_HOST,
@@ -94,6 +103,105 @@ export function handleProxy(req, res, config) {
       else if (value !== undefined) safe[key] = String(value).replace(/[\r\n\t]/g, '');
     }
     console.log(`[headers] ${JSON.stringify(safe)}`);
+  }
+
+  // Opt-in Spark compaction fix: force tool_choice to auto. Buffered so the
+  // JSON can be rewritten before anything is sent upstream. Non-candidates
+  // fall through to the byte-for-byte pipe below.
+  if (isToolsAutoCandidate(req, incomingPath, config)) {
+    const chunks = [];
+    let received = 0;
+    let done = false;
+    let proxyReq = null;
+
+    req.setTimeout(REQUEST_TIMEOUT_MS);
+    req.on('timeout', () => {
+      console.error(`[err] client timeout after ${REQUEST_TIMEOUT_MS}ms`);
+      sendJson(504, { error: 'client_timeout', timeout_ms: REQUEST_TIMEOUT_MS });
+      try { req.destroy(); } catch {}
+      if (proxyReq) try { proxyReq.destroy(); } catch {}
+    });
+
+    req.on('error', (err) => {
+      console.error(`[err] client ${err.message}`);
+      if (proxyReq) proxyReq.destroy();
+    });
+
+    // Client hung up while buffering (no upstream yet) or mid-upstream:
+    // stop buffering, kill upstream so it stops burning quota.
+    res.on('close', () => {
+      if (proxyReq) {
+        if (!res.writableEnded) proxyReq.destroy();
+      } else {
+        done = true;
+      }
+    });
+
+    req.on('data', (chunk) => {
+      if (done) return;
+      received += chunk.length;
+      if (received > MAX_BODY_BYTES) {
+        done = true;
+        console.error(`[err] payload too large (${received} > ${MAX_BODY_BYTES})`);
+        req.resume();
+        sendJson(413, { error: 'payload_too_large', limit: MAX_BODY_BYTES, received });
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      if (done || responded || res.writableEnded) return;
+      const raw = Buffer.concat(chunks);
+      let out = raw;
+      try {
+        const json = JSON.parse(raw.toString('utf8'));
+        const model = typeof json?.model === 'string' ? json.model : '';
+        if (model.toLowerCase().includes('muse-spark') && json.tool_choice !== 'auto') {
+          const oldType =
+            json.tool_choice === undefined ? 'missing' : Array.isArray(json.tool_choice) ? 'array' : typeof json.tool_choice;
+          json.tool_choice = 'auto';
+          out = Buffer.from(JSON.stringify(json));
+          console.log(`[tools-auto] ${incomingPath} tool_choice ${oldType} -> auto`);
+        }
+      } catch {
+        // Malformed JSON: forward untouched, let upstream decide.
+      }
+      headers['content-length'] = String(out.length);
+      delete headers['transfer-encoding'];
+
+      proxyReq = upstreamRequest(options, (proxyRes) => {
+        if (responded || res.writableEnded) return;
+        responded = true;
+        const outHeaders = {};
+        for (const [key, value] of Object.entries(proxyRes.headers)) {
+          if (!HOP_BY_HOP.has(key.toLowerCase())) outHeaders[key] = value;
+        }
+        res.writeHead(proxyRes.statusCode || 502, outHeaders);
+        proxyRes.on('error', (err) => {
+          console.error(`[err] upstream response ${err.message} (${Date.now() - started}ms)`);
+          try { proxyReq.destroy(); } catch {}
+          if (!res.writableEnded) res.destroy();
+        });
+        proxyRes.pipe(res);
+      });
+
+      proxyReq.setTimeout(REQUEST_TIMEOUT_MS);
+      proxyReq.on('timeout', () => {
+        console.error(`[err] upstream timeout after ${REQUEST_TIMEOUT_MS}ms`);
+        proxyReq.destroy(new Error('upstream timeout'));
+      });
+
+      proxyReq.on('error', (err) => {
+        console.error(`[err] upstream ${err.message} (${Date.now() - started}ms)`);
+        if (!res.headersSent) sendJson(502, { error: 'proxy_error', message: err.message });
+        else if (!res.writableEnded) res.destroy();
+      });
+
+      if (out.length) proxyReq.write(out);
+      proxyReq.end();
+    });
+    return;
   }
 
   // Timeouts (client side)
