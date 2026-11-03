@@ -1,6 +1,9 @@
 import http from 'node:http';
 import https from 'node:https';
 import { randomUUID } from 'node:crypto';
+import { Hono } from 'hono';
+import { serve } from '@hono/node-server';
+import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 
 const RAW_PORT = parseInt(process.env.PORT || '8080', 10);
 const PORT = Number.isInteger(RAW_PORT) ? RAW_PORT : 8080;
@@ -32,14 +35,7 @@ const HOP_BY_HOP = new Set([
   'content-length',
 ]);
 
-const server = http.createServer((req, res) => {
-  // Local health endpoint - never proxied, never touches upstream.
-  if (req.url === '/health' || req.url === '/healthz') {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"status":"ok"}');
-    return;
-  }
-
+function handleProxy(req, res) {
   // Pre-check declared Content-Length: reject oversized bodies BEFORE Node sends
   // 100 Continue or pipes anything upstream. Avoids the "accept then destroy"
   // race where the 413 can never reach the client because the socket is gone.
@@ -161,9 +157,24 @@ const server = http.createServer((req, res) => {
   });
 
   req.pipe(proxyReq);
+}
+
+const app = new Hono();
+
+// Local health endpoints - never proxied, never touch upstream.
+app.get('/health', (c) => c.json({ status: 'ok' }));
+app.get('/healthz', (c) => c.json({ status: 'ok' }));
+
+// Everything else goes through the raw byte-for-byte proxy. The proxy writes
+// directly to the Node ServerResponse, so return the adapter's already-sent
+// sentinel (must be the shared singleton: falsy body + pre-override global
+// Response, so the adapter skips writing its own response).
+app.all('*', (c) => {
+  handleProxy(c.env.incoming, c.env.outgoing);
+  return RESPONSE_ALREADY_SENT;
 });
 
-server.listen(PORT, HOST, () => {
+const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }, () => {
   const mode = OVERRIDE_KEY ? 'override (env OPENCODE_API_KEY)' : 'pass-through (from client)';
   console.log(`[boot] listening on http://${HOST}:${PORT}`);
   console.log(`[boot] target: ${UPSTREAM.origin}${TARGET_PREFIX}/v1`);
