@@ -21,6 +21,6 @@ build/
 coverage/
 *.md
 LICENSE
-docker-compose.yml
-docker-compose.override.yml
-Makefile
+server.test.js
+.github/
+.context/

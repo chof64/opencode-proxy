@@ -17,7 +17,7 @@ const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || '60000', 1
 const clean = (v) => (v || '').replace(/[\r\n\t]/g, '').trim();
 const OVERRIDE_KEY = clean(process.env.OPENCODE_API_KEY) || null;
 const SESSION_ID = clean(process.env.SESSION_ID) || randomUUID();
-const USER_AGENT = clean(process.env.USER_AGENT) || 'opencode-warp-proxy/1.0';
+const USER_AGENT = clean(process.env.USER_AGENT) || 'chof64/opencode-proxy/1.0';
 
 const HOP_BY_HOP = new Set([
   'connection',

@@ -25,5 +25,3 @@ dist/
 build/
 coverage/
 
-# Docker
-docker-compose.override.yml

@@ -1,4 +1,6 @@
-# OpenCode Warp Proxy
+# opencode-proxy
+
+> Forked from [arepresas/opencode-warp-proxy](https://github.com/arepresas/opencode-warp-proxy). This fork is maintained independently as `chof64/opencode-proxy` and does not track upstream — new work follows this repo's own needs.
 
 Local HTTP proxy that injects the `x-opencode-session` header so [Warp](https://www.warp.dev/) can use your [OpenCode Go](https://opencode.ai/docs/go/) subscription.
 
@@ -12,7 +14,7 @@ This proxy listens on `127.0.0.1:8080`, receives Warp's requests, and forwards t
 
 ## Requirements
 
-- Docker + Docker Compose
+- Docker
 - An OpenCode Go API key from <https://opencode.ai/auth>
 - Warp terminal with a custom OpenAI-compatible AI provider
 
@@ -20,10 +22,26 @@ This proxy listens on `127.0.0.1:8080`, receives Warp's requests, and forwards t
 
 ### 1. Start the proxy
 
+Pull and run the published image:
+
 ```bash
-cd ~/opencode-warp-proxy
-docker compose up -d --build
+docker run -d --name opencode-proxy --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -e SESSION_ID=your-stable-id \
+  ghcr.io/chof64/opencode-proxy:latest
 ```
+
+Or build locally:
+
+```bash
+docker build -t opencode-proxy:local .
+docker run -d --name opencode-proxy --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 \
+  -e SESSION_ID=your-stable-id \
+  opencode-proxy:local
+```
+
+The container listens on `0.0.0.0` and respects `$PORT`, so hosting platforms can inject their own port. Locally, `-p 127.0.0.1:8080:8080` keeps it on loopback. If you omit `-e SESSION_ID`, the proxy generates a random UUID at each startup (logged as `[boot] session:`) and upstream prompt caching resets on restart.
 
 Verify it works:
 
@@ -53,26 +71,22 @@ Open Warp AI and send a prompt. The `400 MissingSessionID` error should be gone.
 
 ## Configuration
 
-All configuration is via environment variables. Copy the example file and edit:
-
-```bash
-cp .env.example .env
-```
+All configuration is via environment variables, passed with `docker run -e` flags or set on your hosting platform. `.env.example` lists every variable as a reference.
 
 ### Auth modes
 
 | Mode | How it works | When to use |
 |------|--------------|-------------|
 | **Pass-through** (default) | Warp sends `Authorization: Bearer <key>`. Proxy forwards it unchanged. | Recommended. Configure your real key in Warp. |
-| **Override** | Set `OPENCODE_API_KEY` in `.env`. Proxy replaces the client's auth header. | If you don't want your real key in Warp's config files. |
+| **Override** | Pass `-e OPENCODE_API_KEY=...` to `docker run`. Proxy replaces the client's auth header. | If you don't want your real key in Warp's config files. |
 
 ### Optional settings
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `8080` | Listen port (change both this and the host mapping in `docker-compose.yml`). |
+| `PORT` | `8080` | Listen port (match the container port in `-p` when you change this). |
 | `SESSION_ID` | random UUID | Pin a stable id to keep prompt caching across proxy restarts. |
-| `USER_AGENT` | `opencode-warp-proxy/1.0` | Must identify as a coding agent. Generic SDK UAs are blocked. |
+| `USER_AGENT` | `chof64/opencode-proxy/1.0` | Must identify as a coding agent. Generic SDK UAs are blocked. |
 | `MAX_BODY_BYTES` | `10485760` | Max request body size. Larger payloads get 413. |
 | `REQUEST_TIMEOUT_MS` | `60000` | Per-request timeout for both client and upstream. |
 | `UPSTREAM_BASE` | `https://opencode.ai/zen/go` | Upstream base URL. Only needed for tests. |
@@ -93,10 +107,10 @@ Streaming (SSE) passes through transparently - request and response bodies are p
 
 ## Security
 
-- Proxy binds `127.0.0.1:8080` only. No LAN exposure by default.
+- Container listens on `0.0.0.0` inside the image; loopback-only on the host comes from publishing as `-p 127.0.0.1:8080:8080`. A bare `-p 8080:8080` exposes it on the LAN.
 - No proxy-level auth: anyone with localhost access already has the host.
 - API key is never logged. Session id is logged once at startup.
-- Container runs as non-root `node` user with `no-new-privileges`, `read_only` rootfs, and `tmpfs` for `/tmp`.
+- Container runs as non-root `node` user. Image includes a `HEALTHCHECK` on `/health`.
 - Local `/health` endpoint is never proxied (used by Docker healthcheck, doesn't burn upstream quota).
 - Body size and request timeouts are enforced to bound resource use.
 - To expose on a LAN: don't. Use Tailscale, WireGuard, or an SSH tunnel instead.
@@ -107,16 +121,12 @@ Streaming (SSE) passes through transparently - request and response bodies are p
 
 - Restart Warp after changing the AI provider.
 - Base URL must end with `/v1` (no trailing slash).
-- `docker compose logs -f` should show `[req] POST /v1/chat/completions -> ...`. If you only see requests without the `/v1/` prefix, your Warp base URL is wrong.
+- `docker logs -f opencode-proxy` should show `[req] POST /v1/chat/completions -> ...`. If you only see requests without the `/v1/` prefix, your Warp base URL is wrong.
 
 ### `Connection refused` from Warp
 
 - On macOS / Windows Docker, use `http://host.docker.internal:8080/v1`.
-- On Linux, add to `docker-compose.yml` under the service:
-  ```yaml
-  extra_hosts:
-    - "host.docker.internal:host-gateway"
-  ```
+- On Linux, add `--add-host host.docker.internal:host-gateway` to `docker run`.
 
 ### `curl http://127.0.0.1:8080/v1/models` works, Warp does not
 
@@ -129,7 +139,7 @@ The proxy forwards `Content-Type` and streaming headers verbatim. If Warp hangs,
 ### Inspect proxy traffic
 
 ```bash
-docker compose logs -f
+docker logs -f opencode-proxy
 ```
 
 Every request is logged: `[req] METHOD /path -> https://opencode.ai/zen/go/path`.
@@ -157,40 +167,40 @@ npm run dev
 
 Requires Node 24 or later.
 
-## Publishing to Docker Hub
+## Publishing to GHCR
 
-The image is published as [`overlag/opencode-warp-proxy`](https://hub.docker.com/r/overlag/opencode-warp-proxy).
+The image is published as [`ghcr.io/chof64/opencode-proxy`](https://github.com/chof64/opencode-proxy/pkgs/container/opencode-proxy).
 
 ### Pull and run
 
 ```bash
-docker run -d --name opencode-warp-proxy --restart unless-stopped \
+docker run -d --name opencode-proxy --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
-  --security-opt no-new-privileges:true \
-  --read-only --tmpfs /tmp:size=10m \
-  overlag/opencode-warp-proxy:latest
+  -e SESSION_ID=your-stable-id \
+  ghcr.io/chof64/opencode-proxy:latest
 ```
 
-### Build, tag and push your own
+### Automated (preferred)
 
-The repo includes a `Makefile` for the full workflow:
+Merge a conventional commit to `main` and one release run versions, tags (`v*`), creates the GitHub Release, and publishes the GHCR image — never tag or push manually:
+
+| Commit | Release |
+|--------|---------|
+| `fix:` | patch |
+| `feat:` | minor |
+| `BREAKING CHANGE:` footer | major |
+
+Non-releasing pushes skip the publish steps. [`.github/workflows/docker.yml`](.github/workflows/docker.yml) is verification-only (PR builds, never pushes); all `main`-push testing and all publishes happen in [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+### Local build (no push)
+
+All publishes go through GitHub Actions — never push images manually, so every tag is built identically from a `v*` tag. For local verification only:
 
 ```bash
-make login     # docker login -u overlag (one-time, interactive)
-make publish   # build + tag + push :1.0.0 and :latest
+docker build -t opencode-proxy:local .
 ```
 
-Manual equivalent:
-
-```bash
-docker compose build
-docker tag opencode-warp-proxy:local overlag/opencode-warp-proxy:1.0.0
-docker tag opencode-warp-proxy:local overlag/opencode-warp-proxy:latest
-docker push overlag/opencode-warp-proxy:1.0.0
-docker push overlag/opencode-warp-proxy:latest
-```
-
-Tags: `:latest` for everyday use, `:1.0.0` (or next semver) for reproducibility. Override with `make tag TAG=1.2.3 push TAG=1.2.3`.
+Tags: `:latest` for everyday use, `:1.0.0` (or next semver) for reproducibility.
 
 ### Image details
 
@@ -203,19 +213,19 @@ Tags: `:latest` for everyday use, `:1.0.0` (or next semver) for reproducibility.
 If you get `platform does not match` errors, force-pull the right arch:
 
 ```bash
-docker pull --platform linux/arm64 overlag/opencode-warp-proxy:1.0.0
+docker pull --platform linux/arm64 ghcr.io/chof64/opencode-proxy:1.0.0
 ```
 
 ### Releasing a new version
 
+Just merge to `main` using conventional commits (`fix:`, `feat:`, or a `BREAKING CHANGE:` footer). Verify after merge:
+
 ```bash
-make login                  # once
-make publish TAG=1.1.0      # multi-arch build + push :1.1.0 and :latest
-make verify                 # confirm both platforms present in manifest
+docker buildx imagetools inspect ghcr.io/chof64/opencode-proxy:1.1.0
 ```
 
-The build context is filtered by `.dockerignore` (excludes `.git`, `.env*`, `*.md`, `docker-compose.yml`, etc.) so secrets in `.env` never leak into the image, and only `package.json` + `server.js` are sent to the daemon.
+The build context is filtered by `.dockerignore` (excludes `.git`, `.env*`, `*.md`, test files, CI config, etc.) so secrets in `.env` never leak into the image, and the image copies only `package.json` + `server.js`.
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE). Upstream credit: [arepresas/opencode-warp-proxy](https://github.com/arepresas/opencode-warp-proxy).
