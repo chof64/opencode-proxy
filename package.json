@@ -1,6 +1,6 @@
 {
   "name": "opencode-proxy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Local HTTP proxy that injects x-opencode-session so Warp can use the OpenCode Go subscription.",
   "type": "module",
   "private": true,
