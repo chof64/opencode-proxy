@@ -23,6 +23,7 @@ export function loadConfig(env = process.env, opts = {}) {
   const OVERRIDE_KEY = clean(env.OPENCODE_API_KEY) || null;
   const SESSION_ID = clean(env.SESSION_ID) || randomUUID();
   const USER_AGENT = clean(env.USER_AGENT) || 'chof64/opencode-proxy/1.0';
+  const LOG_HEADERS = ['1', 'true'].includes(String(env.LOG_HEADERS || '').toLowerCase());
 
   return {
     PORT,
@@ -36,6 +37,7 @@ export function loadConfig(env = process.env, opts = {}) {
     OVERRIDE_KEY,
     SESSION_ID,
     USER_AGENT,
+    LOG_HEADERS,
   };
 }
 
