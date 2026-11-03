@@ -55,9 +55,10 @@ function startProxy(extraEnv = {}) {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         const kill = () => child.kill();
+        let stderr = '';
         const timer = setTimeout(() => {
           kill();
-          reject(new Error('proxy did not boot in time'));
+          reject(new Error(`proxy did not boot in time${stderr ? `: ${stderr.slice(-500)}` : ''}`));
         }, 8000);
         child.stdout.on('data', (d) => {
           if (d.toString().includes('[boot] listening')) {
@@ -65,9 +66,18 @@ function startProxy(extraEnv = {}) {
             resolve({ child, port, kill });
           }
         });
+        child.stderr.on('data', (d) => {
+          stderr += d.toString();
+        });
         child.on('error', (err) => {
           clearTimeout(timer);
           reject(err);
+        });
+        // Fail fast when the child crashes on boot (e.g. missing deps):
+        // without this the 8s timer burns on every boot failure.
+        child.on('exit', (code) => {
+          clearTimeout(timer);
+          reject(new Error(`proxy exited before boot (code ${code})${stderr ? `: ${stderr.slice(-500)}` : ''}`));
         });
       }),
   );
@@ -100,8 +110,8 @@ before(async () => {
 });
 
 after(() => {
-  proxy.kill();
-  overrideProxy.kill();
+  proxy?.kill();
+  overrideProxy?.kill();
   return new Promise((r) => stub.close(r));
 });
 
