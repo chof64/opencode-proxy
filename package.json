@@ -1,7 +1,7 @@
 {
   "name": "opencode-proxy",
   "version": "1.0.0",
-  "description": "Local HTTP proxy that injects x-opencode-session so Warp can use the OpenCode Go subscription.",
+  "description": "Local HTTP proxy that adds x-opencode-session so any OpenAI-compatible harness can use the OpenCode Go subscription.",
   "type": "module",
   "private": true,
   "engines": {
@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "OPENCODE_E2E_LIVE=1 node --test tests/e2e.live.test.js"
   },
   "license": "MIT",
   "devDependencies": {

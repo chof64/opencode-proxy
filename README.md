@@ -2,7 +2,7 @@
 
 > Forked from [arepresas/opencode-warp-proxy](https://github.com/arepresas/opencode-warp-proxy). This fork is maintained independently as `chof64/opencode-proxy` and does not track upstream — new work follows this repo's own needs.
 
-Local HTTP proxy that injects the `x-opencode-session` header so [Warp](https://www.warp.dev/) can use your [OpenCode Go](https://opencode.ai/docs/go/) subscription.
+Local HTTP proxy that adds the `x-opencode-session` header so any OpenAI-compatible harness can use your [OpenCode Go](https://opencode.ai/docs/go/) subscription.
 
 OpenCode Go rejects requests without that header:
 
@@ -10,13 +10,13 @@ OpenCode Go rejects requests without that header:
 400 Bad Request {"type":"MissingSessionID","message":"Request is missing x-opencode-session..."}
 ```
 
-This proxy listens on `127.0.0.1:8080`, receives Warp's requests, and forwards them to `https://opencode.ai` with the path unchanged and the required headers injected.
+This proxy listens on `127.0.0.1:8080`, receives client requests, and forwards them to `https://opencode.ai` with the path unchanged and the required headers injected.
 
 ## Requirements
 
 - Docker
 - An OpenCode Go API key from <https://opencode.ai/auth>
-- Warp terminal with a custom OpenAI-compatible AI provider
+- Any OpenAI-compatible AI harness (e.g. Warp terminal with a custom provider)
 
 ## Quick start
 
@@ -51,9 +51,9 @@ curl http://127.0.0.1:8080/zen/go/v1/models
 
 You should get the list of available Go models as JSON.
 
-### 2. Configure Warp
+### 2. Configure your harness (example: Warp)
 
-In **Warp > Settings > AI > AI Provider**:
+In **Warp > Settings > AI > AI Provider** (or your harness's equivalent custom-provider setting):
 
 | Field | Value |
 |-------|-------|
@@ -69,7 +69,7 @@ Pick any model from the OpenCode Go catalog (e.g. `glm-5.3-flash`, `kimi-k3`, `q
 
 ### 3. Test
 
-Open Warp AI and send a prompt. The `400 MissingSessionID` error should be gone.
+Send a prompt from your harness. The `400 MissingSessionID` error should be gone.
 
 ## Configuration
 
@@ -79,8 +79,8 @@ All configuration is via environment variables, passed with `docker run -e` flag
 
 | Mode | How it works | When to use |
 |------|--------------|-------------|
-| **Pass-through** (default) | Warp sends `Authorization: Bearer <key>`. Proxy forwards it unchanged. | Recommended. Configure your real key in Warp. |
-| **Override** | Pass `-e OPENCODE_API_KEY=...` to `docker run`. Proxy replaces the client's auth header. | If you don't want your real key in Warp's config files. |
+| **Pass-through** (default) | The harness sends `Authorization: Bearer <key>`. Proxy forwards it unchanged. | Recommended. Configure your real key in the harness. |
+| **Override** | Pass `-e OPENCODE_API_KEY=...` to `docker run`. Proxy replaces the client's auth header. | If you don't want your real key in harness config files. |
 
 ### Optional settings
 
@@ -95,7 +95,7 @@ All configuration is via environment variables, passed with `docker run -e` flag
 ## How it works
 
 ```
-Warp  --HTTP-->  127.0.0.1:8080  --HTTPS-->  opencode.ai (same path)
+Client --HTTP--> 127.0.0.1:8080  --HTTPS--> opencode.ai (same path)
                           |
                           +-- mirrors path:         /zen/go/v1/*       ->  /zen/go/v1/*
                                                     /inference/go/*     ->  /inference/go/*
@@ -122,22 +122,22 @@ Streaming (SSE) passes through transparently - request and response bodies are p
 
 ### `400 MissingSessionID` still appears
 
-- Restart Warp after changing the AI provider.
+- Restart your harness after changing the AI provider.
 - Base URL must be a full mirrored path ending in `/v1` with no trailing slash (e.g. `http://localhost:8080/zen/go/v1` or `http://localhost:8080/inference/go/openai/v1`).
-- `docker logs -f opencode-proxy` should show `[req] POST /zen/go/v1/chat/completions -> https://opencode.ai/zen/go/v1/chat/completions`. If requests 404, your Warp base URL is not a mirrored Go path.
+- `docker logs -f opencode-proxy` should show `[req] POST /zen/go/v1/chat/completions -> https://opencode.ai/zen/go/v1/chat/completions`. If requests 404, your base URL is not a mirrored Go path.
 
-### `Connection refused` from Warp
+### `Connection refused` from your harness
 
 - On macOS / Windows Docker, use `http://host.docker.internal:8080/zen/go/v1` (or `.../inference/go/openai/v1`).
 - On Linux, add `--add-host host.docker.internal:host-gateway` to `docker run`.
 
-### `curl http://127.0.0.1:8080/zen/go/v1/models` works, Warp does not
+### `curl http://127.0.0.1:8080/zen/go/v1/models` works, the harness does not
 
-Warp might cache the AI provider settings. Restart it fully (Cmd+Q / kill the process).
+Your harness might cache the AI provider settings. Restart it fully.
 
 ### Streaming / hanging responses
 
-The proxy forwards `Content-Type` and streaming headers verbatim. If Warp hangs, check that the model you picked supports streaming (most do).
+The proxy forwards status, headers, and streaming bodies verbatim. If requests hang, check that the model you picked supports streaming (most do).
 
 ### Inspect proxy traffic
 
@@ -146,6 +146,15 @@ docker logs -f opencode-proxy
 ```
 
 Every request is logged: `[req] METHOD /zen/go/v1/... -> https://opencode.ai/zen/go/v1/...` (path mirrored).
+
+## Live end-to-end (manual)
+
+`npm run test:e2e` drives the real proxy against real `https://opencode.ai` using
+your `OPENCODE_API_KEY` (plus optional `OPENCODE_E2E_MODEL`, default
+`beam-free`, and `OPENCODE_E2E_RESPONSES_MODEL`, default
+`muse-spark-1.3-contributor`). It spends a tiny amount of quota on short chat,
+streamed chat, and Responses API calls, so run it on demand only. Without the key it exits before
+touching the network, and plain `npm test` never runs it (CI stays hermetic).
 
 ## Development
 

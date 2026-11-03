@@ -137,7 +137,7 @@ test('mirrors zen path, injects session id, passes auth through', async () => {
   assert.equal(seen[0].url, '/zen/go/v1/models');
   assert.equal(seen[0].headers['x-opencode-session'], 'test-session-id');
   assert.equal(seen[0].headers.authorization, 'Bearer client-key');
-  assert.ok(!('accept-encoding' in seen[0].headers), 'proxy must not negotiate compression upstream');
+  assert.equal(seen[0].headers['accept-encoding'], 'gzip, br');
 });
 
 test('mirrors inference paths unchanged, query included', async () => {
@@ -156,6 +156,34 @@ test('mirrors inference paths unchanged, query included', async () => {
   assert.equal(models.status, 200);
   assert.equal(seen.length, 1);
   assert.equal(seen[0].url, '/inference/go/v1/models?foo=bar');
+});
+
+test("client session id wins when present, proxy injects fallback when absent", async () => {
+  seen.length = 0;
+  await clientGet(proxy.port, '/zen/go/v1/models', { 'x-opencode-session': 'client-session' });
+  assert.equal(seen[0].headers['x-opencode-session'], 'client-session');
+  seen.length = 0;
+  await clientGet(proxy.port, '/zen/go/v1/models');
+  assert.equal(seen[0].headers['x-opencode-session'], 'test-session-id');
+});
+
+test('client user-agent wins when present, proxy injects fallback when absent', async () => {
+  seen.length = 0;
+  await clientGet(proxy.port, '/zen/go/v1/models', { 'user-agent': 'my-harness/2.0' });
+  assert.equal(seen[0].headers['user-agent'], 'my-harness/2.0');
+  seen.length = 0;
+  await clientGet(proxy.port, '/zen/go/v1/models');
+  assert.ok(seen[0].headers['user-agent']);
+});
+
+test('client content-length and custom headers pass through verbatim', async () => {
+  seen.length = 0;
+  const payload = { model: 'm', messages: [] };
+  const body = JSON.stringify(payload);
+  const res = await clientPost(proxy.port, '/zen/go/v1/chat', payload, { 'x-custom': 'yes' });
+  assert.equal(res.status, 200);
+  assert.equal(seen[0].headers['content-length'], String(Buffer.byteLength(body)));
+  assert.equal(seen[0].headers['x-custom'], 'yes');
 });
 
 test('override key replaces client auth', async () => {
