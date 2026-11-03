@@ -1,6 +1,6 @@
 {
   "name": "opencode-proxy",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Local HTTP proxy that adds x-opencode-session so any OpenAI-compatible harness can use the OpenCode Go subscription.",
   "type": "module",
   "private": true,
