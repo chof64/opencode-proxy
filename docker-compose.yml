@@ -17,8 +17,9 @@ services:
       OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
       SESSION_ID: ${SESSION_ID:-}
       USER_AGENT: ${USER_AGENT:-opencode-warp-proxy/1.0}
-      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-10485760}
       REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-60000}
+      UPSTREAM_BASE: ${UPSTREAM_BASE:-}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/health"]
       interval: 30s

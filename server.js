@@ -2,11 +2,16 @@ import http from 'node:http';
 import https from 'node:https';
 import { randomUUID } from 'node:crypto';
 
-const PORT = parseInt(process.env.PORT || '8080', 10);
+const RAW_PORT = parseInt(process.env.PORT || '8080', 10);
+const PORT = Number.isInteger(RAW_PORT) ? RAW_PORT : 8080;
 const HOST = process.env.HOST || '127.0.0.1';
-const TARGET_HOST = 'opencode.ai';
-const TARGET_PORT = 443;
-const MAX_BODY_BYTES = parseInt(process.env.MAX_BODY_BYTES || String(1024 * 1024), 10);
+// Upstream base. Overridable via env so tests can point at a local stub.
+const UPSTREAM = new URL(process.env.UPSTREAM_BASE || 'https://opencode.ai/zen/go');
+const TARGET_HOST = UPSTREAM.hostname;
+const TARGET_PORT = UPSTREAM.port ? parseInt(UPSTREAM.port, 10) : (UPSTREAM.protocol === 'http:' ? 80 : 443);
+const TARGET_PREFIX = UPSTREAM.pathname.replace(/\/+$/, '');
+const upstreamRequest = UPSTREAM.protocol === 'http:' ? http.request : https.request;
+const MAX_BODY_BYTES = parseInt(process.env.MAX_BODY_BYTES || String(10 * 1024 * 1024), 10);
 const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || '60000', 10);
 
 const clean = (v) => (v || '').replace(/[\r\n\t]/g, '').trim();
@@ -58,7 +63,7 @@ const server = http.createServer((req, res) => {
   };
 
   const incomingPath = (req.url || '/').replace(/[\x00-\x1f]/g, '');
-  const targetPath = `/zen/go${incomingPath.startsWith('/') ? incomingPath : '/' + incomingPath}`;
+  const targetPath = `${TARGET_PREFIX}${incomingPath.startsWith('/') ? incomingPath : '/' + incomingPath}`;
 
   const headers = {};
   for (const [key, value] of Object.entries(req.headers)) {
@@ -66,6 +71,10 @@ const server = http.createServer((req, res) => {
       headers[key] = value;
     }
   }
+
+  // Never ask upstream for compression: bodies are piped through byte-for-byte,
+  // so a gzipped reply would reach the client flagged as plain JSON. Force identity.
+  delete headers['accept-encoding'];
 
   headers.host = TARGET_HOST;
   headers['user-agent'] = USER_AGENT;
@@ -90,16 +99,22 @@ const server = http.createServer((req, res) => {
   req.setTimeout(REQUEST_TIMEOUT_MS);
   req.on('timeout', () => {
     console.error(`[err] client timeout after ${REQUEST_TIMEOUT_MS}ms`);
+    sendJson(504, { error: 'client_timeout', timeout_ms: REQUEST_TIMEOUT_MS });
     req.destroy();
   });
 
-  const proxyReq = https.request(options, (proxyRes) => {
+  const proxyReq = upstreamRequest(options, (proxyRes) => {
     if (responded || res.writableEnded) return; // we already sent 413 / 502
     responded = true;
     const outHeaders = { ...proxyRes.headers };
     delete outHeaders['transfer-encoding'];
-    delete outHeaders['content-encoding'];
     res.writeHead(proxyRes.statusCode || 502, outHeaders);
+    // Upstream dying mid-stream must end the client response, not hang it.
+    proxyRes.on('error', (err) => {
+      console.error(`[err] upstream response ${err.message} (${Date.now() - started}ms)`);
+      proxyReq.destroy();
+      if (!res.writableEnded) res.destroy();
+    });
     proxyRes.pipe(res);
   });
 
@@ -112,7 +127,8 @@ const server = http.createServer((req, res) => {
 
   proxyReq.on('error', (err) => {
     console.error(`[err] upstream ${err.message} (${Date.now() - started}ms)`);
-    sendJson(502, { error: 'proxy_error', message: err.message });
+    if (!res.headersSent) sendJson(502, { error: 'proxy_error', message: err.message });
+    else if (!res.writableEnded) res.destroy();
   });
 
   req.on('error', (err) => {
@@ -138,13 +154,19 @@ const server = http.createServer((req, res) => {
     }
   });
 
+  // Client hung up (e.g. Warp "stop" pressed): kill the upstream request so it
+  // stops burning quota generating output nobody will read.
+  res.on('close', () => {
+    if (!res.writableEnded) proxyReq.destroy();
+  });
+
   req.pipe(proxyReq);
 });
 
 server.listen(PORT, HOST, () => {
   const mode = OVERRIDE_KEY ? 'override (env OPENCODE_API_KEY)' : 'pass-through (from client)';
   console.log(`[boot] listening on http://${HOST}:${PORT}`);
-  console.log(`[boot] target: https://${TARGET_HOST}/zen/go/v1`);
+  console.log(`[boot] target: ${UPSTREAM.origin}${TARGET_PREFIX}/v1`);
   console.log(`[boot] session: ${SESSION_ID}`);
   console.log(`[boot] user-agent: ${USER_AGENT}`);
   console.log(`[boot] auth: ${mode}`);
