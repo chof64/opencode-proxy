@@ -107,7 +107,7 @@ Streaming (SSE) passes through transparently - request and response bodies are p
 
 ## Security
 
-- Proxy binds `127.0.0.1:8080` only. No LAN exposure by default.
+- Container listens on `0.0.0.0` inside the image; loopback-only on the host comes from publishing as `-p 127.0.0.1:8080:8080`. A bare `-p 8080:8080` exposes it on the LAN.
 - No proxy-level auth: anyone with localhost access already has the host.
 - API key is never logged. Session id is logged once at startup.
 - Container runs as non-root `node` user. Image includes a `HEALTHCHECK` on `/health`.
@@ -180,7 +180,17 @@ docker run -d --name opencode-proxy --restart unless-stopped \
   ghcr.io/chof64/opencode-proxy:latest
 ```
 
-### Build, tag and push
+### Automated (preferred)
+
+Push a version tag and GitHub Actions tests, then builds and pushes `linux/amd64` + `linux/arm64` to GHCR:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+PRs and `main` pushes build both arches without pushing. See [`.github/workflows/docker.yml`](.github/workflows/docker.yml).
+
+### Manual build, tag and push
 
 ```bash
 echo "$CR_PAT" | docker login ghcr.io -u chof64 --password-stdin
@@ -209,15 +219,11 @@ docker pull --platform linux/arm64 ghcr.io/chof64/opencode-proxy:1.0.0
 ### Releasing a new version
 
 ```bash
-echo "$CR_PAT" | docker login ghcr.io -u chof64 --password-stdin
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/chof64/opencode-proxy:1.1.0 \
-  -t ghcr.io/chof64/opencode-proxy:latest \
-  --push .
+git tag v1.1.0 && git push origin v1.1.0
 docker buildx imagetools inspect ghcr.io/chof64/opencode-proxy:1.1.0
 ```
 
-The build context is filtered by `.dockerignore` (excludes `.git`, `.env*`, `*.md`, etc.) so secrets in `.env` never leak into the image, and only `package.json` + `server.js` are sent to the daemon.
+The build context is filtered by `.dockerignore` (excludes `.git`, `.env*`, `*.md`, test files, CI config, etc.) so secrets in `.env` never leak into the image, and the image copies only `package.json` + `server.js`.
 
 ## License
 
