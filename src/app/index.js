@@ -24,6 +24,9 @@ export function loadConfig(env = process.env, opts = {}) {
   const SESSION_ID = clean(env.SESSION_ID) || randomUUID();
   const USER_AGENT = clean(env.USER_AGENT) || 'chof64/opencode-proxy/1.0';
   const LOG_HEADERS = ['1', 'true'].includes(String(env.LOG_HEADERS || '').toLowerCase());
+  const COPILOT_COMPACTION_TOOLS_AUTO = ['1', 'true'].includes(
+    String(env.COPILOT_COMPACTION_TOOLS_AUTO || '').toLowerCase(),
+  );
 
   return {
     PORT,
@@ -38,6 +41,7 @@ export function loadConfig(env = process.env, opts = {}) {
     SESSION_ID,
     USER_AGENT,
     LOG_HEADERS,
+    COPILOT_COMPACTION_TOOLS_AUTO,
   };
 }
 

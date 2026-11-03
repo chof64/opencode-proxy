@@ -95,6 +95,7 @@ function startProxy(extraEnv = {}) {
 
 let proxy;
 let overrideProxy;
+let autoProxy;
 
 before(async () => {
   stub = http.createServer((req, res) => {
@@ -117,11 +118,13 @@ before(async () => {
   stubPort = stub.address().port;
   proxy = await startProxy();
   overrideProxy = await startProxy({ OPENCODE_API_KEY: 'override-key' });
+  autoProxy = await startProxy({ COPILOT_COMPACTION_TOOLS_AUTO: '1' });
 });
 
 after(() => {
   proxy?.kill();
   overrideProxy?.kill();
+  autoProxy?.kill();
   return new Promise((r) => stub.close(r));
 });
 
@@ -298,5 +301,90 @@ test('malformed target gets single 4xx without touching upstream', async () => {
     sock.on('error', reject);
   });
   assert.match(raw, /^HTTP\/1\.1 4\d\d/);
+  assert.equal(seen.length, 0);
+});
+
+test('tools-auto off by default leaves tool_choice untouched', async () => {
+  seen.length = 0;
+  const payload = { model: 'muse-spark-1.3-contributor', messages: [{ role: 'user', content: 'hi' }], tool_choice: 'required' };
+  const res = await clientPost(proxy.port, '/zen/go/v1/chat/completions', payload);
+  assert.equal(res.status, 200);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(JSON.parse(seen[0].body), payload);
+});
+
+test('tools-auto forces auto for spark chat completions', async () => {
+  const cases = [
+    ['none', 'none'],
+    ['required', 'required'],
+    [{ type: 'function', function: { name: 'lookup' } }, 'object'],
+    [undefined, 'missing'],
+    ['auto', 'already-auto'],
+  ];
+  for (const [toolChoice, _label] of cases) {
+    seen.length = 0;
+    const payload = { model: 'muse-spark-1.3-contributor', messages: [{ role: 'user', content: 'hi' }] };
+    if (toolChoice !== undefined) payload.tool_choice = toolChoice;
+    const res = await clientPost(autoProxy.port, '/zen/go/v1/chat/completions', payload);
+    assert.equal(res.status, 200);
+    assert.equal(seen.length, 1);
+    const forwarded = JSON.parse(seen[0].body);
+    assert.equal(forwarded.tool_choice, 'auto');
+    // tools untouched, session still injected, length corrected
+    assert.equal(seen[0].headers['x-opencode-session'], 'test-session-id');
+    assert.equal(seen[0].headers['content-length'], String(Buffer.byteLength(seen[0].body)));
+  }
+});
+
+test('tools-auto ignores non-spark models', async () => {
+  seen.length = 0;
+  const payload = { model: 'glm-5.3-flash', messages: [], tool_choice: 'required' };
+  const res = await clientPost(autoProxy.port, '/zen/go/v1/chat/completions', payload);
+  assert.equal(res.status, 200);
+  assert.deepEqual(JSON.parse(seen[0].body), payload);
+});
+
+test('tools-auto applies to responses endpoint', async () => {
+  seen.length = 0;
+  const payload = { model: 'muse-spark-1.3-contributor', input: 'hi', tool_choice: 'none' };
+  const res = await clientPost(autoProxy.port, '/inference/go/openai/v1/responses', payload);
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(seen[0].body).tool_choice, 'auto');
+});
+
+test('tools-auto passes non-JSON through and keeps 413 guard', async () => {
+  seen.length = 0;
+  const raw = 'not-json{{{';
+  const res = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: autoProxy.port, path: '/zen/go/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(raw) }, agent: noKeepAlive },
+      (r) => {
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => resolve({ status: r.statusCode, body: Buffer.concat(chunks).toString() }));
+      },
+    );
+    req.on('error', reject);
+    req.end(raw);
+  });
+  assert.equal(res.status, 200);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].body, raw);
+
+  // oversized declared body still 413 without touching upstream (flag on)
+  seen.length = 0;
+  const bigRes = await new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: autoProxy.port, path: '/zen/go/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': String(11 * 1024 * 1024) }, agent: noKeepAlive },
+      (r) => {
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => resolve({ status: r.statusCode, body: Buffer.concat(chunks).toString() }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+  assert.equal(bigRes.status, 413);
   assert.equal(seen.length, 0);
 });
