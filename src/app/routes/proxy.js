@@ -1,26 +1,5 @@
-import http from 'node:http';
-import https from 'node:https';
-import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
-import { serve } from '@hono/node-server';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
-
-const RAW_PORT = parseInt(process.env.PORT || '8080', 10);
-const PORT = Number.isInteger(RAW_PORT) ? RAW_PORT : 8080;
-const HOST = process.env.HOST || '127.0.0.1';
-// Upstream base. Overridable via env so tests can point at a local stub.
-const UPSTREAM = new URL(process.env.UPSTREAM_BASE || 'https://opencode.ai/zen/go');
-const TARGET_HOST = UPSTREAM.hostname;
-const TARGET_PORT = UPSTREAM.port ? parseInt(UPSTREAM.port, 10) : (UPSTREAM.protocol === 'http:' ? 80 : 443);
-const TARGET_PREFIX = UPSTREAM.pathname.replace(/\/+$/, '');
-const upstreamRequest = UPSTREAM.protocol === 'http:' ? http.request : https.request;
-const MAX_BODY_BYTES = parseInt(process.env.MAX_BODY_BYTES || String(10 * 1024 * 1024), 10);
-const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || '60000', 10);
-
-const clean = (v) => (v || '').replace(/[\r\n\t]/g, '').trim();
-const OVERRIDE_KEY = clean(process.env.OPENCODE_API_KEY) || null;
-const SESSION_ID = clean(process.env.SESSION_ID) || randomUUID();
-const USER_AGENT = clean(process.env.USER_AGENT) || 'chof64/opencode-proxy/1.0';
 
 const HOP_BY_HOP = new Set([
   'connection',
@@ -35,7 +14,19 @@ const HOP_BY_HOP = new Set([
   'content-length',
 ]);
 
-function handleProxy(req, res) {
+export function handleProxy(req, res, config) {
+  const {
+    TARGET_HOST,
+    TARGET_PORT,
+    TARGET_PREFIX,
+    upstreamRequest,
+    MAX_BODY_BYTES,
+    REQUEST_TIMEOUT_MS,
+    OVERRIDE_KEY,
+    SESSION_ID,
+    USER_AGENT,
+  } = config;
+
   // Pre-check declared Content-Length: reject oversized bodies BEFORE Node sends
   // 100 Continue or pipes anything upstream. Avoids the "accept then destroy"
   // race where the 413 can never reach the client because the socket is gone.
@@ -159,35 +150,17 @@ function handleProxy(req, res) {
   req.pipe(proxyReq);
 }
 
-const app = new Hono();
+export function createProxyRoutes(config) {
+  const proxy = new Hono();
 
-// Local health endpoints - never proxied, never touch upstream.
-app.all('/health', (c) => c.json({ status: 'ok' }));
-app.all('/healthz', (c) => c.json({ status: 'ok' }));
+  // Everything else goes through the raw byte-for-byte proxy. The proxy writes
+  // directly to the Node ServerResponse, so return the adapter's already-sent
+  // sentinel (must be the shared singleton: falsy body + pre-override global
+  // Response, so the adapter skips writing its own response).
+  proxy.all('*', (c) => {
+    handleProxy(c.env.incoming, c.env.outgoing, config);
+    return RESPONSE_ALREADY_SENT;
+  });
 
-// Everything else goes through the raw byte-for-byte proxy. The proxy writes
-// directly to the Node ServerResponse, so return the adapter's already-sent
-// sentinel (must be the shared singleton: falsy body + pre-override global
-// Response, so the adapter skips writing its own response).
-app.all('*', (c) => {
-  handleProxy(c.env.incoming, c.env.outgoing);
-  return RESPONSE_ALREADY_SENT;
-});
-
-const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }, () => {
-  const mode = OVERRIDE_KEY ? 'override (env OPENCODE_API_KEY)' : 'pass-through (from client)';
-  console.log(`[boot] listening on http://${HOST}:${PORT}`);
-  console.log(`[boot] target: ${UPSTREAM.origin}${TARGET_PREFIX}/v1`);
-  console.log(`[boot] session: ${SESSION_ID}`);
-  console.log(`[boot] user-agent: ${USER_AGENT}`);
-  console.log(`[boot] auth: ${mode}`);
-  console.log(`[boot] limits: body=${MAX_BODY_BYTES}B timeout=${REQUEST_TIMEOUT_MS}ms`);
-});
-
-const shutdown = (signal) => {
-  console.log(`[shutdown] ${signal} received`);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 5000).unref();
-};
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+  return proxy;
+}

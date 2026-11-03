@@ -207,7 +207,7 @@ Tags: `:latest` for everyday use, `:1.0.0` (or next semver) for reproducibility.
 - Base: `node:24-alpine`
 - Size: ~170 MB per arch
 - Architecture: `linux/amd64`, `linux/arm64` (multi-arch manifest, auto-selected per host)
-- Entrypoint: `node server.js`
+- Entrypoint: `node src/server.js`
 - Exposed port: `8080`
 
 If you get `platform does not match` errors, force-pull the right arch:
@@ -224,7 +224,7 @@ Just merge to `main` using conventional commits (`fix:`, `feat:`, or a `BREAKING
 docker buildx imagetools inspect ghcr.io/chof64/opencode-proxy:1.1.0
 ```
 
-The build context is filtered by `.dockerignore` (excludes `.git`, `.env*`, `*.md`, test files, CI config, etc.) so secrets in `.env` never leak into the image, and the image copies only `package.json` + `server.js`.
+The build context is filtered by `.dockerignore` (excludes `.git`, `.env*`, `*.md`, test files, CI config, etc.) so secrets in `.env` never leak into the image, and the image copies only `package.json` + `src/`.
 
 ## License
 
