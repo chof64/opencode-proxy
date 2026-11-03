@@ -18,7 +18,6 @@ export function handleProxy(req, res, config) {
   const {
     TARGET_HOST,
     TARGET_PORT,
-    TARGET_PREFIX,
     upstreamRequest,
     MAX_BODY_BYTES,
     REQUEST_TIMEOUT_MS,
@@ -50,7 +49,9 @@ export function handleProxy(req, res, config) {
   };
 
   const incomingPath = (req.url || '/').replace(/[\x00-\x1f]/g, '');
-  const targetPath = `${TARGET_PREFIX}${incomingPath.startsWith('/') ? incomingPath : '/' + incomingPath}`;
+  // Scoping is done by the router (mounted at /zen/go and /inference/go):
+  // anything reaching here is forwarded unchanged, query included.
+  const targetPath = incomingPath;
 
   const headers = {};
   for (const [key, value] of Object.entries(req.headers)) {

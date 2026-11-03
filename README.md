@@ -10,7 +10,7 @@ OpenCode Go rejects requests without that header:
 400 Bad Request {"type":"MissingSessionID","message":"Request is missing x-opencode-session..."}
 ```
 
-This proxy listens on `127.0.0.1:8080`, receives Warp's requests, and forwards them to `https://opencode.ai/zen/go/v1/...` with the required headers injected.
+This proxy listens on `127.0.0.1:8080`, receives Warp's requests, and forwards them to `https://opencode.ai` with the path unchanged and the required headers injected.
 
 ## Requirements
 
@@ -46,7 +46,7 @@ The container listens on `0.0.0.0` and respects `$PORT`, so hosting platforms ca
 Verify it works:
 
 ```bash
-curl http://127.0.0.1:8080/v1/models
+curl http://127.0.0.1:8080/zen/go/v1/models
 ```
 
 You should get the list of available Go models as JSON.
@@ -58,10 +58,12 @@ In **Warp > Settings > AI > AI Provider**:
 | Field | Value |
 |-------|-------|
 | Provider | OpenAI-compatible (custom) |
-| Base URL | `http://localhost:8080/v1` |
+| Base URL | `http://localhost:8080/zen/go/v1` |
 | API key | Your OpenCode Go API key |
 
-On macOS / Windows Docker, the host is `http://host.docker.internal:8080/v1`.
+On macOS / Windows Docker, the host is `http://host.docker.internal:8080/zen/go/v1`. Prefer the inference endpoint instead with `http://localhost:8080/inference/go/openai/v1` (swap only the domain: `opencode.ai/...` becomes `localhost:8080/...`).
+
+> Breaking change: legacy `/v1` paths (e.g. `http://localhost:8080/v1`) now return 404. Update your Base URL to one of the mirrored paths above.
 
 Pick any model from the OpenCode Go catalog (e.g. `glm-5.3-flash`, `kimi-k3`, `qwen3.8-flash`).
 
@@ -89,14 +91,15 @@ All configuration is via environment variables, passed with `docker run -e` flag
 | `USER_AGENT` | `chof64/opencode-proxy/1.0` | Must identify as a coding agent. Generic SDK UAs are blocked. |
 | `MAX_BODY_BYTES` | `10485760` | Max request body size. Larger payloads get 413. |
 | `REQUEST_TIMEOUT_MS` | `60000` | Per-request timeout for both client and upstream. |
-| `UPSTREAM_BASE` | `https://opencode.ai/zen/go` | Upstream base URL. Only needed for tests. |
 
 ## How it works
 
 ```
-Warp  --HTTP-->  127.0.0.1:8080  --HTTPS-->  opencode.ai/zen/go/v1/...
+Warp  --HTTP-->  127.0.0.1:8080  --HTTPS-->  opencode.ai (same path)
                           |
-                          +-- rewrites path:        /v1/*  ->  /zen/go/v1/*
+                          +-- mirrors path:         /zen/go/v1/*       ->  /zen/go/v1/*
+                                                    /inference/go/*     ->  /inference/go/*
+                          +-- rejects anything else with 404
                           +-- injects headers:
                                 x-opencode-session: <stable uuid>
                                 user-agent:         <custom>
@@ -120,15 +123,15 @@ Streaming (SSE) passes through transparently - request and response bodies are p
 ### `400 MissingSessionID` still appears
 
 - Restart Warp after changing the AI provider.
-- Base URL must end with `/v1` (no trailing slash).
-- `docker logs -f opencode-proxy` should show `[req] POST /v1/chat/completions -> ...`. If you only see requests without the `/v1/` prefix, your Warp base URL is wrong.
+- Base URL must be a full mirrored path ending in `/v1` with no trailing slash (e.g. `http://localhost:8080/zen/go/v1` or `http://localhost:8080/inference/go/openai/v1`).
+- `docker logs -f opencode-proxy` should show `[req] POST /zen/go/v1/chat/completions -> https://opencode.ai/zen/go/v1/chat/completions`. If requests 404, your Warp base URL is not a mirrored Go path.
 
 ### `Connection refused` from Warp
 
-- On macOS / Windows Docker, use `http://host.docker.internal:8080/v1`.
+- On macOS / Windows Docker, use `http://host.docker.internal:8080/zen/go/v1` (or `.../inference/go/openai/v1`).
 - On Linux, add `--add-host host.docker.internal:host-gateway` to `docker run`.
 
-### `curl http://127.0.0.1:8080/v1/models` works, Warp does not
+### `curl http://127.0.0.1:8080/zen/go/v1/models` works, Warp does not
 
 Warp might cache the AI provider settings. Restart it fully (Cmd+Q / kill the process).
 
@@ -142,7 +145,7 @@ The proxy forwards `Content-Type` and streaming headers verbatim. If Warp hangs,
 docker logs -f opencode-proxy
 ```
 
-Every request is logged: `[req] METHOD /path -> https://opencode.ai/zen/go/path`.
+Every request is logged: `[req] METHOD /zen/go/v1/... -> https://opencode.ai/zen/go/v1/...` (path mirrored).
 
 ## Development
 
